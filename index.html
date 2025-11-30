@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Saturn Interaction - 手势交互粒子系统</title>
+    <style>
+        /* ================= 基础样式 ================= */
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; user-select: none; }
+        
+        /* 视频隐藏，仅用于捕捉 */
+        #input-video { display: none; }
+        
+        /* ================= UI 界面设计 ================= */
+        #ui-container {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; /* 让鼠标事件穿透到 Canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            z-index: 10;
+        }
+
+        /* 顶部标题栏 */
+        #header {
+            position: absolute;
+            top: 30px; left: 30px;
+            color: rgba(255, 255, 255, 0.9);
+            text-align: left;
+            text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+        h1 { margin: 0; font-weight: 300; font-size: 1.4rem; letter-spacing: 4px; text-transform: uppercase; }
+        p.subtitle { margin: 8px 0 0; font-size: 0.85rem; color: rgba(255, 255, 255, 0.5); letter-spacing: 1px; }
+
+        /* 状态指示器 */
+        #status {
+            position: absolute;
+            bottom: 30px; left: 30px;
+            color: #00ffcc;
+            font-size: 0.9rem;
+            font-family: monospace;
+            text-shadow: 0 0 5px rgba(0, 255, 204, 0.4);
+        }
+
+        /* 浪漫短语显示区 */
+        #phrase-box {
+            font-size: 2.2rem;
+            color: #ffffff;
+            text-shadow: 0 0 25px rgba(255, 215, 0, 0.6);
+            opacity: 0;
+            transform: translateY(30px) scale(0.95);
+            transition: all 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+            max-width: 80%;
+            line-height: 1.6;
+            letter-spacing: 2px;
+            font-weight: 300;
+        }
+        #phrase-box.visible {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+
+        /* ================= 按钮样式 (毛玻璃风格) ================= */
+        .control-btn {
+            pointer-events: auto; /* 允许点击 */
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: rgba(255, 255, 255, 0.9);
+            padding: 10px 20px;
+            border-radius: 30px;
+            cursor: pointer;
+            transition: all 0.4s ease;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.9rem;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            outline: none;
+            position: absolute;
+            bottom: 30px;
+        }
+
+        .control-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.15);
+            transform: translateY(-2px);
+        }
+
+        .control-btn:active {
+            transform: translateY(1px);
+        }
+
+        /* 按钮位置 */
+        #fullscreen-btn { right: 30px; }
+        #music-btn { right: 160px; }
+
+        /* 音乐播放时的激活状态 */
+        #music-btn.playing {
+            border-color: #00ffcc;
+            color: #00ffcc;
+            background: rgba(0, 255, 204, 0.05);
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+        }
+
+        /* 图标微调 */
+        .icon-svg { fill: currentColor; width: 18px; height: 18px; }
+
+        /* 加载中提示 */
+        #loader {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 1.1rem;
+            letter-spacing: 1px;
+            text-align: center;
+            line-height: 1.8;
+            z-index: 20;
+            pointer-events: none;
+        }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <video id="input-video"></video>
+    
+    <audio id="bgm-audio" loop>
+        <source src="bgm.mp3" type="audio/mpeg">
+    </audio>
+
+    <div id="loader">系统初始化中...<br><span style="font-size:0.8rem; opacity:0.7">请授予摄像头权限</span></div>
+
+    <div id="ui-container">
+        <div id="header">
+            <h1>SATURN ECHO</h1>
+            <p class="subtitle">手势交互粒子系统</p>
+        </div>
+        
+        <div id="phrase-box"></div>
+        
+        <div id="status">等待手势信号...</div>
+
+        <button id="music-btn" class="control-btn">
+            <svg class="icon-svg" viewBox="0 0 24 24">
+                <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+            </svg>
+            <span id="music-text">播放音乐</span>
+        </button>
+
+        <button id="fullscreen-btn" class="control-btn">
+            <svg class="icon-svg" viewBox="0 0 24 24">
+                <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>
+            </svg>
+            <span>全屏沉浸</span>
+        </button>
+    </div>
+
+    <script>
+        // ================= 配置参数 =================
+        const CONFIG = {
+            particleCount: 18000,     // 粒子数量
+            sphereRadius: 15,         // 核心半径
+            ringInner: 22,            // 星环内径
+            ringOuter: 45,            // 星环外径
+            dispersionSpeed: 0.06,    // 散开速度
+            returnSpeed: 0.04,        // 凝聚速度
+            cameraZ: 85               // 摄像机距离
+        };
+
+        // 100条温馨短语库 (精选部分展示，程序会自动循环)
+        const phrases = [
+            "星河滚烫，你是人间理想。", "愿你眼中有光，活出想要的模样。", "万物皆有裂痕，那是光照进来的地方。",
+            "保持热爱，奔赴山海。", "你的征途是星辰大海。", "生活明朗，万物可爱。",
+            "温柔半两，从容一生。", "每一个不曾起舞的日子，都是对生命的辜负。", "心怀浪漫宇宙，也珍惜人间日常。",
+            "愿你拥有被爱照亮的生命。", "所有的运气，都是实力的积攒。", "且挨过三冬四夏，暂受些此苦彼难。",
+            "做一个温柔的人，浅浅笑，轻轻爱。", "但行好事，莫问前程。", "以此轮皎洁的明月，共祝我们拥有长久的友谊。",
+            "世界上所有的惊喜和好运，都是你累积的温柔和善良。", "愿世间所有的美好，都与你环环相扣。", 
+            "即使行到水穷处，也要坐看云起时。", "心中有暖，又何惧人生荒凉。", "岁月漫长，值得等待。",
+            "你逆光而来，配得上这世间所有的好。", "愿你此生尽兴，赤诚善良。", "去发光，而不是被照亮。",
+            "满眼醉意，山河皆你。", "生活原本沉闷，但跑起来就有风。", "与其互为人间，不如自成宇宙。",
+            "愿你所得皆所期，所失亦无碍。", "知足且上进，温柔而坚定。", "无论去哪，沿途皆是风景。",
+            "希望你的生活没有琐事，只有好事。", "别慌，月亮也正在大海某处迷茫。", "日出有盼，日落有念。",
+            "所求皆如愿，所行化坦途。", "愿你一生努力，一生被爱。", "凡是过往，皆为序章。",
+            "慢品人间烟火色，闲观万事岁月长。", "幸无所爱，无畏山海。", "愿你如阳光，明媚不忧伤。",
+            "总有一束光，为你而来。", "热爱可抵岁月漫长。", "心中若有桃花源，何处不是水云间。",
+            "把所有的夜归还给星河。", "愿你不仅拥有征服世界的野心，也有感动世间的柔软。",
+            "在平凡的日子里，活出自己的光芒。", "既然选择了远方，便只顾风雨兼程。", "花开有时，重逢无期。",
+            "愿你所有的努力都不白费。", "生活不仅需要氧气，也需要勇气。", "别让平淡的生活耗尽了你所有的向往。",
+            "你来人间一趟，你要看看太阳。", "做一个自带光芒的人。", "愿你活得像风一样自由。",
+            "所有失去的，都会以另一种方式归来。", "不要忘记你曾是怎样的小孩。", "保持对生活的热爱和好奇。",
+            "每一天都是限量版。", "愿你即使单枪匹马，也能勇敢无畏。", "相信美好的事情即将发生。",
+            "你的潜力远超你的想象。", "给自己一点时间，你会闪闪发光。", "不要停下脚步，前方有更美的风景。",
+            "愿你的生活常温暖，日子总是温柔又闪光。", "记得每天多爱自己一点。", "微笑是解决问题的最好方式。",
+            "做一个内心强大的人。", "生活不是等待风暴过去，而是学会在雨中翩翩起舞。", "你值得拥有这世间所有的美好。",
+            "愿你成为自己的太阳，无需凭借谁的光。", "所有的努力，都是为了遇见更好的自己。", "心之所向，素履以往。",
+            "愿你出走半生，归来仍是少年。", "保持善良，好运自来。", "你的笑容，是世界上最美的风景。",
+            "愿你的梦里，全是甜蜜。", "生活需要仪式感。", "每一个当下，都是最好的安排。",
+            "愿你被这个世界温柔以待。", "做一个温暖的人，温暖自己，也温暖别人。", "勇敢地做自己，你就是最棒的。",
+            "愿你的每一天都充满阳光。", "相信自己，你无所不能。", "生活中的小确幸，藏在每一个细节里。",
+            "愿你拥有一颗强大的内心。", "保持乐观，生活会更美好。", "你的存在，本身就是一种美好。",
+            "愿你的人生如诗如画。", "每一份努力，都算数。", "愿你拥有无限的可能。",
+            "做一个快乐的人。", "生活因你而精彩。", "愿你的人生充满爱与希望。",
+            "每一次跌倒，都是为了更好地站起来。", "愿你的未来，星河璀璨。", "珍惜眼前人，走好脚下路。",
+            "愿你活成自己喜欢的样子。", "所有的等待，终将不负归期。", "愿你的人生，没有遗憾。",
+            "做一个有温度的人。"
+        ];
+
+        // 变量定义
+        let scene, camera, renderer, particleSystem;
+        let originalPositions = []; 
+        let currentPositions = [];  
+        let randomTargets = [];     
+        let handState = 'CLOSED';   
+        let isDispersed = false;    
+        let lastPhraseIndex = -1;
+
+        // ================= Three.js 初始化 =================
+        function initThree() {
+            scene = new THREE.Scene();
+            // 深邃宇宙雾效
+            scene.fog = new THREE.FogExp2(0x050505, 0.0025);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = CONFIG.cameraZ;
+            camera.position.y = 10;
+            camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 性能优化
+            document.body.appendChild(renderer.domElement);
+
+            createSaturnParticles();
+            
+            // 灯光
+            const ambientLight = new THREE.AmbientLight(0x202020);
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0xffcc00, 1.5, 200);
+            pointLight.position.set(0, 0, 0);
+            scene.add(pointLight);
+
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        // ================= 粒子生成算法 =================
+        function createSaturnParticles() {
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+
+            // 配色方案：金色核心，冰蓝/紫色星环
+            const colorSphere = new THREE.Color(0xffaa00); 
+            const colorRingInner = new THREE.Color(0x00ffff);
+            const colorRingOuter = new THREE.Color(0xaa00ff);
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                let x, y, z, r, g, b;
+                const isSphere = Math.random() < 0.35; // 35% 粒子构成球体
+
+                if (isSphere) {
+                    const radius = CONFIG.sphereRadius * Math.cbrt(Math.random());
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.acos(2 * Math.random() - 1);
+                    
+                    x = radius * Math.sin(phi) * Math.cos(theta);
+                    y = radius * Math.sin(phi) * Math.sin(theta);
+                    z = radius * Math.cos(phi);
+                    
+                    const variation = (Math.random() - 0.5) * 0.3;
+                    r = Math.max(0, Math.min(1, colorSphere.r + variation));
+                    g = Math.max(0, Math.min(1, colorSphere.g + variation));
+                    b = Math.max(0, Math.min(1, colorSphere.b + variation));
+                } else {
+                    const radius = CONFIG.ringInner + Math.random() * (CONFIG.ringOuter - CONFIG.ringInner);
+                    const theta = Math.random() * Math.PI * 2;
+                    
+                    x = radius * Math.cos(theta);
+                    z = radius * Math.sin(theta);
+                    y = (Math.random() - 0.5) * 1.5; // 星环厚度
+
+                    // 星环倾斜 25度
+                    const tilt = Math.PI * 0.14;
+                    const y_new = y * Math.cos(tilt) - z * Math.sin(tilt);
+                    const z_new = y * Math.sin(tilt) + z * Math.cos(tilt);
+                    y = y_new;
+                    z = z_new;
+
+                    // 星环颜色渐变 (内蓝外紫)
+                    const t = (radius - CONFIG.ringInner) / (CONFIG.ringOuter - CONFIG.ringInner);
+                    const color = colorRingInner.clone().lerp(colorRingOuter, t);
+                    
+                    r = color.r + (Math.random()-0.5)*0.1;
+                    g = color.g + (Math.random()-0.5)*0.1;
+                    b = color.b + (Math.random()-0.5)*0.1;
+                }
+
+                positions.push(x, y, z);
+                colors.push(r, g, b);
+
+                originalPositions.push({x, y, z});
+                
+                // 大爆炸随机目标点
+                const randR = 120 + Math.random() * 150;
+                const randTheta = Math.random() * Math.PI * 2;
+                const randPhi = Math.acos(2 * Math.random() - 1);
+                randomTargets.push({
+                    x: randR * Math.sin(randPhi) * Math.cos(randTheta),
+                    y: randR * Math.sin(randPhi) * Math.sin(randTheta),
+                    z: randR * Math.cos(randPhi)
+                });
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const material = new THREE.PointsMaterial({
+                size: 0.5,
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                transparent: true,
+                opacity: 0.85
+            });
+
+            particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+        }
+
+        // ================= 音乐控制逻辑 =================
+        const audio = document.getElementById('bgm-audio');
+        const musicBtn = document.getElementById('music-btn');
+        const musicText = document.getElementById('music-text');
+        let isMusicPlaying = false;
+        
+        audio.volume = 0.5; // 默认音量 50%
+
+        function toggleMusic() {
+            if (isMusicPlaying) {
+                audio.pause();
+                isMusicPlaying = false;
+                musicText.innerText = "播放音乐";
+                musicBtn.classList.remove('playing');
+            } else {
+                const playPromise = audio.play();
+                if (playPromise !== undefined) {
+                    playPromise.then(_ => {
+                        isMusicPlaying = true;
+                        musicText.innerText = "暂停音乐";
+                        musicBtn.classList.add('playing');
+                    }).catch(error => {
+                        console.warn("Autoplay blocked. User interaction needed.");
+                    });
+                }
+            }
+        }
+
+        musicBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleMusic();
+        });
+
+        // 首次点击页面自动播放 (优化用户体验)
+        document.body.addEventListener('click', function firstClick() {
+            if (!isMusicPlaying) toggleMusic();
+            document.body.removeEventListener('click', firstClick);
+        }, { once: true });
+
+
+        // ================= 手势识别逻辑 =================
+        function initHands() {
+            const videoElement = document.getElementById('input-video');
+            const statusElement = document.getElementById('status');
+            const loader = document.getElementById('loader');
+
+            const hands = new Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }});
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults((results) => {
+                if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                    const landmarks = results.multiHandLandmarks[0];
+                    const wrist = landmarks[0];
+                    const tips = [8, 12, 16, 20];
+                    
+                    let avgDist = 0;
+                    tips.forEach(idx => {
+                        const dx = landmarks[idx].x - wrist.x;
+                        const dy = landmarks[idx].y - wrist.y;
+                        avgDist += Math.sqrt(dx*dx + dy*dy);
+                    });
+                    avgDist /= tips.length;
+
+                    // 状态防抖逻辑
+                    if (avgDist > 0.25) {
+                        if (handState !== 'OPEN') {
+                            handState = 'OPEN';
+                            statusElement.innerText = "信号捕捉：手掌张开 [ 发散 ]";
+                            triggerDispersion();
+                        }
+                    } else {
+                        if (handState !== 'CLOSED') {
+                            handState = 'CLOSED';
+                            statusElement.innerText = "信号捕捉：握紧拳头 [ 凝聚 ]";
+                            triggerGathering();
+                        }
+                    }
+                } else {
+                    statusElement.innerText = "等待手势信号...";
+                }
+            });
+
+            const cameraUtils = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640,
+                height: 480
+            });
+            
+            cameraUtils.start()
+                .then(() => {
+                    loader.style.display = 'none';
+                    statusElement.innerText = "系统就绪，请展示手掌";
+                })
+                .catch(err => {
+                    loader.innerHTML = "摄像头启动失败<br>请检查浏览器权限设置";
+                    console.error(err);
+                });
+        }
+
+        // ================= 交互响应 =================
+        function triggerDispersion() {
+            isDispersed = true;
+            generatePhrase();
+        }
+
+        function triggerGathering() {
+            isDispersed = false;
+            hidePhrase();
+        }
+
+        function generatePhrase() {
+            const phraseBox = document.getElementById('phrase-box');
+            let newIndex;
+            let attempts = 0;
+            do {
+                newIndex = Math.floor(Math.random() * phrases.length);
+                attempts++;
+            } while (newIndex === lastPhraseIndex && attempts < 10);
+            
+            lastPhraseIndex = newIndex;
+            phraseBox.innerText = phrases[newIndex];
+            phraseBox.classList.add('visible');
+        }
+
+        function hidePhrase() {
+            document.getElementById('phrase-box').classList.remove('visible');
+        }
+
+        // ================= 动画循环 =================
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (!particleSystem) return;
+
+            const positions = particleSystem.geometry.attributes.position.array;
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const px = positions[i * 3];
+                const py = positions[i * 3 + 1];
+                const pz = positions[i * 3 + 2];
+
+                let tx, ty, tz;
+
+                if (isDispersed) {
+                    tx = randomTargets[i].x;
+                    ty = randomTargets[i].y;
+                    tz = randomTargets[i].z;
+                    // 散开时的漂浮感
+                    tx += Math.sin(Date.now() * 0.001 + i) * 0.05;
+                } else {
+                    tx = originalPositions[i].x;
+                    ty = originalPositions[i].y;
+                    tz = originalPositions[i].z;
+                }
+
+                const speed = isDispersed ? CONFIG.dispersionSpeed : CONFIG.returnSpeed;
+                
+                positions[i * 3]     += (tx - px) * speed;
+                positions[i * 3 + 1] += (ty - py) * speed;
+                positions[i * 3 + 2] += (tz - pz) * speed;
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            
+            // 整体自转
+            const rotSpeed = isDispersed ? 0.0005 : 0.002;
+            particleSystem.rotation.y += rotSpeed;
+            // 微微上下浮动
+            particleSystem.position.y = Math.sin(Date.now() * 0.001) * 1;
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // 全屏逻辑
+        document.getElementById('fullscreen-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+            }
+        });
+
+        // 启动程序
+        initThree();
+        initHands();
+        animate();
+
+    </script>
+</body>
+</html>
